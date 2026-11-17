@@ -1,0 +1,5 @@
+---
+jenkins_dir: "{{ ansible_env.HOME }}/legeni-infra"
+jenkins_project: tp_infra
+jenkins_http_port: 8080
+jenkins_agent_port: 50000

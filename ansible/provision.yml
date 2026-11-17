@@ -1,0 +1,7 @@
+---
+- name: Préparer l'infrastructure
+  hosts: local
+  roles:
+    - docker
+    - minikube
+    - jenkins

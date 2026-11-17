@@ -1,0 +1,34 @@
+---
+- name: Chercher la commande minikube
+  ansible.builtin.command: minikube version
+  register: minikube_check
+  changed_when: false
+  failed_when: false
+
+- name: Télécharger minikube si absent
+  ansible.builtin.get_url:
+    url: "{{ minikube_url }}"
+    dest: /usr/local/bin/minikube
+    mode: "0755"
+  become: true
+  when: minikube_check.rc != 0
+
+- name: Lire l'état du cluster
+  ansible.builtin.command: minikube status
+  register: minikube_status
+  changed_when: false
+  failed_when: false
+
+- name: Démarrer le cluster s'il est arrêté
+  ansible.builtin.command: minikube start --driver={{ minikube_driver }}
+  when: minikube_status.rc != 0
+
+- name: Lire les addons
+  ansible.builtin.command: minikube addons list -o json
+  register: minikube_addons
+  changed_when: false
+
+- name: Activer les addons voulus
+  ansible.builtin.command: minikube addons enable {{ item }}
+  loop: "{{ minikube_addons_wanted }}"
+  when: (minikube_addons.stdout | from_json)[item].Status != 'enabled'
