@@ -1,0 +1,22 @@
+services:
+  jenkins:
+    build: ./jenkins
+    image: jenkins-docker:lts
+    container_name: jenkins
+    user: root
+    restart: always
+    ports:
+      - "{{ jenkins_http_port }}:8080"
+      - "{{ jenkins_agent_port }}:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - devops-net
+
+networks:
+  devops-net:
+    driver: bridge
+
+volumes:
+  jenkins_home:

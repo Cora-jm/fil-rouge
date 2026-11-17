@@ -1,0 +1,6 @@
+---
+minikube_url: https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+minikube_driver: docker
+minikube_addons_wanted:
+  - metrics-server
+  - ingress
