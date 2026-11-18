@@ -21,4 +21,5 @@
   community.docker.docker_compose_v2:
     project_src: "{{ jenkins_dir }}"
     project_name: "{{ jenkins_project }}"
+    build: always
     state: present
