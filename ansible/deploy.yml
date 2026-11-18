@@ -51,6 +51,9 @@
             curl -sf --retry 10 --retry-connrefused --retry-delay 2 --max-time 5 http://webapp/api/info
           register: smoke
           changed_when: false
+          retries: 5
+          delay: 5
+          until: smoke.rc == 0 and smoke.stdout_lines | length > 0
 
         - name: Vérifier la version déployée
           ansible.builtin.assert:
