@@ -167,9 +167,19 @@ pipeline {
         }
         success {
             echo "Pipeline terminé : ${IMAGE_REPO}:${IMAGE_TAG}"
+            withCredentials([string(credentialsId: 'discord-webhook', variable: 'DISCORD_URL')]) {
+                sh '''
+                    curl -s -H "Content-Type: application/json" -d "{\\"content\\": \\"Succès : ${JOB_NAME} #${BUILD_NUMBER} - image ${IMAGE_TAG}\\"}" "$DISCORD_URL" || true
+                '''
+            }
         }
         failure {
             echo "Échec du pipeline : consulte l'étape en rouge"
+            withCredentials([string(credentialsId: 'discord-webhook', variable: 'DISCORD_URL')]) {
+                sh '''
+                    curl -s -H "Content-Type: application/json" -d "{\\"content\\": \\"Échec : ${JOB_NAME} #${BUILD_NUMBER} - ${BUILD_URL}\\"}" "$DISCORD_URL" || true
+                '''
+            }
         }
     }
 }
