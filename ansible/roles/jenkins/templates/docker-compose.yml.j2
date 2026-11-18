@@ -13,10 +13,13 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - devops-net
+      - minikube
 
 networks:
   devops-net:
     driver: bridge
+  minikube:
+    external: true
 
 volumes:
   jenkins_home:
