@@ -1,64 +1,156 @@
-// Pipeline de référence du TP 3.5 : tests -> build -> test d'acceptance -> push
 pipeline {
     agent any
 
-    parameters {
-        string(name: 'DOCKERHUB_ID', defaultValue: 'legeni07', description: 'Votre identifiant Docker Hub')
-        booleanParam(name: 'PUSH', defaultValue: true, description: "Pousser l'image sur Docker Hub")
-    }
-
     environment {
-        IMAGE          = "${params.DOCKERHUB_ID}/legeni-webapp"
-        VERSION        = "1.0.${env.BUILD_NUMBER}"
-        TEST_CONTAINER = "webapp-ci-${env.BUILD_NUMBER}"
-        CI_NETWORK     = "ci-net-${env.BUILD_NUMBER}"
+        IMAGE_REPO = 'coraliejm/legeni-webapp'
+        TEST_IMAGE = "legeni-test:${env.BUILD_NUMBER}"
     }
 
     options {
         timestamps()
-        timeout(time: 20, unit: 'MINUTES')
+        timeout(time: 40, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
     }
 
     stages {
-        stage('Tests unitaires') {
+        stage('Préparation') {
             steps {
-                // L'étape "test" du Dockerfile lance flake8 + pytest : si un test échoue, le build s'arrête ici
-                sh 'docker build --target test -t legeni-webapp:test .'
+                script {
+                    env.BASE_VERSION = readFile('VERSION').trim()
+                    env.IMAGE_TAG = "${env.BASE_VERSION}-${env.BUILD_NUMBER}"
+                }
+                echo "Image visée : ${IMAGE_REPO}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Image de test') {
+            steps {
+                sh 'docker build --target test -t $TEST_IMAGE .'
+            }
+        }
+
+        stage('Contrôles qualité') {
+            parallel {
+                stage('Tests et couverture') {
+                    steps {
+                        sh '''
+                            set +e
+                            mkdir -p reports
+                            docker rm -f tests-$BUILD_NUMBER >/dev/null 2>&1
+                            docker run --name tests-$BUILD_NUMBER $TEST_IMAGE \
+                                pytest -q --junitxml=/app/junit.xml --cov=app \
+                                --cov-report=xml:/app/coverage.xml --cov-fail-under=80
+                            rc=$?
+                            docker cp tests-$BUILD_NUMBER:/app/junit.xml reports/junit.xml
+                            docker cp tests-$BUILD_NUMBER:/app/coverage.xml reports/coverage.xml
+                            docker rm -f tests-$BUILD_NUMBER
+                            exit $rc
+                        '''
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: 'reports/junit.xml'
+                            archiveArtifacts artifacts: 'reports/*.xml', allowEmptyArchive: true
+                        }
+                    }
+                }
+                stage('Style (flake8)') {
+                    steps {
+                        sh 'docker run --rm $TEST_IMAGE flake8 .'
+                    }
+                }
+                stage('Dockerfile (hadolint)') {
+                    steps {
+                        sh 'docker run --rm -i hadolint/hadolint < Dockerfile'
+                    }
+                }
+                stage('Syntaxe Ansible') {
+                    steps {
+                        dir('ansible') {
+                            sh '''
+                                ansible-playbook --syntax-check provision.yml
+                                ansible-playbook --syntax-check deploy.yml -e target_env=staging -e image_tag=0.0.0
+                            '''
+                        }
+                    }
+                }
             }
         }
 
         stage('Build image') {
             steps {
-                sh 'docker build --build-arg APP_VERSION=$VERSION -t $IMAGE:$VERSION -t $IMAGE:latest .'
+                sh 'docker build --build-arg APP_VERSION=$IMAGE_TAG -t $IMAGE_REPO:$IMAGE_TAG .'
             }
         }
 
-        stage("Test d'acceptance") {
+        stage('Scan Trivy') {
             steps {
                 sh '''
-                    docker network create $CI_NETWORK
-                    docker run -d --name $TEST_CONTAINER --network $CI_NETWORK $IMAGE:$VERSION
-                    # On interroge le conteneur depuis un conteneur curl placé sur le même réseau
-                    docker run --rm --network $CI_NETWORK curlimages/curl:8.11.1 \
-                        -sf --retry 10 --retry-connrefused --retry-delay 1 http://$TEST_CONTAINER:5000/health
-                    docker run --rm --network $CI_NETWORK curlimages/curl:8.11.1 \
-                        -sf http://$TEST_CONTAINER:5000/ | grep -q "Version $VERSION"
+                    docker run --rm \
+                        -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v trivy-cache:/root/.cache/ \
+                        aquasec/trivy:latest image \
+                        --exit-code 1 --severity CRITICAL --ignore-unfixed \
+                        $IMAGE_REPO:$IMAGE_TAG
                 '''
             }
         }
 
         stage('Push Docker Hub') {
-            when { expression { params.PUSH } }
+            when { branch 'main' }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub',
+                withCredentials([usernamePassword(credentialsId: 'registry-credentials',
                                                   usernameVariable: 'DH_USER',
                                                   passwordVariable: 'DH_TOKEN')]) {
                     sh '''
                         echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
-                        docker push $IMAGE:$VERSION
-                        docker push $IMAGE:latest
+                        docker push $IMAGE_REPO:$IMAGE_TAG
+                        docker logout
                     '''
+                }
+            }
+        }
+
+        stage('Déploiement staging') {
+            when { branch 'main' }
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG'),
+                                 string(credentialsId: 'ansible-vault-pass', variable: 'VAULT_PASS')]) {
+                    dir('ansible') {
+                        sh '''
+                            VP=$(mktemp)
+                            trap 'rm -f "$VP"' EXIT
+                            printf '%s' "$VAULT_PASS" > "$VP"
+                            ansible-playbook deploy.yml -e target_env=staging -e image_tag=$IMAGE_TAG --vault-password-file "$VP"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Validation production') {
+            when { branch 'main' }
+            steps {
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: "Déployer ${IMAGE_TAG} en production ?", ok: 'Déployer'
+                }
+            }
+        }
+
+        stage('Déploiement production') {
+            when { branch 'main' }
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG'),
+                                 string(credentialsId: 'ansible-vault-pass', variable: 'VAULT_PASS')]) {
+                    dir('ansible') {
+                        sh '''
+                            VP=$(mktemp)
+                            trap 'rm -f "$VP"' EXIT
+                            printf '%s' "$VAULT_PASS" > "$VP"
+                            ansible-playbook deploy.yml -e target_env=prod -e image_tag=$IMAGE_TAG --vault-password-file "$VP"
+                        '''
+                    }
                 }
             }
         }
@@ -66,13 +158,13 @@ pipeline {
 
     post {
         always {
-            sh 'docker rm -f $TEST_CONTAINER || true; docker network rm $CI_NETWORK || true'
+            sh 'docker rmi -f $TEST_IMAGE >/dev/null 2>&1 || true'
         }
         success {
-            echo "Image ${IMAGE}:${VERSION} construite et validée"
+            echo "Pipeline terminé : ${IMAGE_REPO}:${IMAGE_TAG}"
         }
         failure {
-            echo "Échec du pipeline : consultez la console de l'étape en rouge"
+            echo "Échec du pipeline : consulte l'étape en rouge"
         }
     }
 }
