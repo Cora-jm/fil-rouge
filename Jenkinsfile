@@ -67,11 +67,16 @@ pipeline {
                 }
                 stage('Syntaxe Ansible') {
                     steps {
-                        dir('ansible') {
-                            sh '''
-                                ansible-playbook --syntax-check provision.yml
-                                ansible-playbook --syntax-check deploy.yml -e target_env=staging -e image_tag=0.0.0
-                            '''
+                        withCredentials([string(credentialsId: 'ansible-vault-pass', variable: 'VAULT_PASS')]) {
+                            dir('ansible') {
+                                sh '''
+                                    VP=$(mktemp)
+                                    trap 'rm -f "$VP"' EXIT
+                                    printf '%s' "$VAULT_PASS" > "$VP"
+                                    ansible-playbook --syntax-check provision.yml
+                                    ansible-playbook --syntax-check deploy.yml -e target_env=staging -e image_tag=0.0.0 --vault-password-file "$VP"
+                                '''
+                            }
                         }
                     }
                 }
