@@ -1,0 +1,5 @@
+---
+k8s_namespace: legeni-prod
+app_env: prod
+app_color: "#2da44e"
+webapp_replicas: 4

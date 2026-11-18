@@ -1,0 +1,5 @@
+---
+k8s_namespace: legeni-staging
+app_env: staging
+app_color: "#bf8700"
+webapp_replicas: 2

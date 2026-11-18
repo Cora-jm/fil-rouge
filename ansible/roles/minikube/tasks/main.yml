@@ -32,3 +32,9 @@
   ansible.builtin.command: minikube addons enable {{ item }}
   loop: "{{ minikube_addons_wanted }}"
   when: (minikube_addons.stdout | from_json)[item].Status != 'enabled'
+
+- name: Installer la bibliothèque Python pour Kubernetes
+  ansible.builtin.apt:
+    name: python3-kubernetes
+    state: present
+  become: true

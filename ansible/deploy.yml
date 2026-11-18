@@ -1,0 +1,70 @@
+---
+- name: Déployer legeni-webapp
+  hosts: local
+  gather_facts: false
+  vars:
+    image_repo: coraliejm/legeni-webapp
+    rollout_timeout: 120
+  vars_files:
+    - "vars/{{ target_env }}.yml"
+    - vars/vault.yml
+
+  tasks:
+    - name: Vérifier les paramètres
+      ansible.builtin.assert:
+        that:
+          - target_env in ['staging', 'prod']
+          - image_tag is defined
+        fail_msg: "Usage : -e target_env=staging|prod -e image_tag=1.2.3"
+
+    - name: Déployer et vérifier
+      block:
+        - name: Créer le namespace
+          kubernetes.core.k8s:
+            state: present
+            template: k8s/00-namespace.yml.j2
+
+        - name: Appliquer la configuration et le secret
+          kubernetes.core.k8s:
+            state: present
+            template: k8s/10-config.yml.j2
+          no_log: true
+
+        - name: Déployer Redis
+          kubernetes.core.k8s:
+            state: present
+            template: k8s/20-redis.yml.j2
+            wait: true
+            wait_timeout: "{{ rollout_timeout }}"
+
+        - name: Déployer l'application
+          kubernetes.core.k8s:
+            state: present
+            template: k8s/30-webapp.yml.j2
+            wait: true
+            wait_timeout: "{{ rollout_timeout }}"
+
+        - name: Test de fumée
+          ansible.builtin.command: >-
+            kubectl -n {{ k8s_namespace }} run smoke-{{ 100000 | random }}
+            --rm -i -q --restart=Never --image=curlimages/curl:8.11.1 --command --
+            curl -sf --retry 10 --retry-connrefused --retry-delay 2 --max-time 5 http://webapp/api/info
+          register: smoke
+          changed_when: false
+
+        - name: Vérifier la version déployée
+          ansible.builtin.assert:
+            that:
+              - (smoke.stdout_lines | first | from_json).version == image_tag
+            fail_msg: "Version inattendue : {{ smoke.stdout }}"
+
+      rescue:
+        - name: Retour arrière
+          ansible.builtin.command: kubectl -n {{ k8s_namespace }} rollout undo deployment/webapp
+
+        - name: Attendre le retour à l'état stable
+          ansible.builtin.command: kubectl -n {{ k8s_namespace }} rollout status deployment/webapp --timeout=120s
+
+        - name: Signaler l'échec
+          ansible.builtin.fail:
+            msg: "Déploiement de {{ image_tag }} en {{ target_env }} échoué, retour arrière effectué"
